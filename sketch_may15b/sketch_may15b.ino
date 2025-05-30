@@ -21,8 +21,7 @@ bool shouldSendData = false;
 const char* trackerEndpoint = "https://rastreamento-colaborativo-v1.onrender.com/tracker/post";
 unsigned long lastRequestTime = 0;
 const unsigned long interval = 1 * 60 * 1000UL;
-bool attemptedReconnect = false;  // ✅ Correção aqui
-
+bool attemptedReconnect = false;
 
 // ==================== FUNÇÕES AUXILIARES ====================
 String generateUUID() {
@@ -46,9 +45,12 @@ String buildCombinedJson() {
 
   JsonObject locationRequest = doc.createNestedObject("locationRequestDTO");
   locationRequest["idLocate"] = generateUUID();
-  locationRequest["deviceMacAddress"] = deviceMacAddress;
+  locationRequest["deviceMacAddress"] = deviceMacAddress; 
   locationRequest["trackerId"] = trackerId;
   locationRequest["rssi"] = 15;
+
+  // DEBUG: Mostra o valor de deviceMacAddress antes de construir o JSON
+  Serial.println("buildCombinedJson: Usando deviceMacAddress: " + deviceMacAddress);
 
   JsonObject wifiList = doc.createNestedObject("wifiListDTO");
   JsonArray wifiArray = wifiList.createNestedArray("wifiAccessPoints");
@@ -90,7 +92,7 @@ void sendTrackerData() {
 #define CHARACTERISTIC_UUID "abcdef01-1234-5678-1234-56789abcdef0"
 
 class WiFiCredentialCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *pCharacteristic) override {
+ void onWrite(BLECharacteristic *pCharacteristic) override {
     String jsonStr = String(pCharacteristic->getValue().c_str());
     Serial.println("Recebido via BLE:");
     Serial.println(jsonStr);
@@ -99,26 +101,30 @@ class WiFiCredentialCallbacks : public BLECharacteristicCallbacks {
     DeserializationError error = deserializeJson(doc, jsonStr);
 
     if (!error) {
-      ssid = doc["ssid"] | "";
-      password = doc["password"] | "";
-      trackerId = doc["trackerId"] | "";
-      deviceMacAddress = doc["deviceMacAddress"] | "";
+      String received_ssid = doc["ssid"] | "";
+      String received_password = doc["password"] | "";
+      String received_trackerId = doc["trackerId"] | "";
+      String received_deviceMacAddress = doc["deviceMacAddress"] | "";
+
+      // DEBUG: Mostra os valores recebidos via BLE
+      Serial.println("onWrite: ssid recebido: " + received_ssid);
+      Serial.println("onWrite: deviceMacAddress recebido: " + received_deviceMacAddress);
 
       // Salvar nas preferências
       preferences.begin("config", false);
-      preferences.putString("ssid", ssid);
-      preferences.putString("password", password);
-      preferences.putString("trackerId", trackerId);
-      preferences.putString("deviceMacAddress", deviceMacAddress);
+      preferences.putString("ssid", received_ssid);
+      preferences.putString("password", received_password);
+      preferences.putString("trackerId", received_trackerId);
+      preferences.putString("deviceMacAddress", received_deviceMacAddress);
       preferences.end();
 
-      // Atualiza variáveis globais a partir das preferências salvas
-      preferences.begin("config", false);
-      ssid = preferences.getString("ssid", "");
-      password = preferences.getString("password", "");
-      trackerId = preferences.getString("trackerId", "default-tracker");
-      deviceMacAddress = preferences.getString("deviceMacAddress", "default-device");
-      preferences.end();
+      ssid = received_ssid;
+      password = received_password;
+      trackerId = received_trackerId;
+      deviceMacAddress = received_deviceMacAddress;
+
+      // DEBUG: Mostra o valor de deviceMacAddress APÓS a atribuição às variáveis globais
+      Serial.println("onWrite: deviceMacAddress APÓS atribuição global: " + deviceMacAddress);
 
       Serial.println("Variáveis globais atualizadas após BLE:");
       Serial.println("SSID: " + ssid);
@@ -141,7 +147,7 @@ class WiFiCredentialCallbacks : public BLECharacteristicCallbacks {
         Serial.println("\nConectado após BLE!");
         configTime(0, 0, "pool.ntp.org", "time.nist.gov");
         delay(2000);
-        shouldSendData = true;
+        shouldSendData = true; // Define para enviar dados na próxima iteração do loop
         lastRequestTime = millis();
         attemptedReconnect = false; // libera tentativas futuras se necessário
       } else {
@@ -186,11 +192,21 @@ void setup() {
   ssid = preferences.getString("ssid", "");
   password = preferences.getString("password", "");
   trackerId = preferences.getString("trackerId", "default-tracker");
-  deviceMacAddress = preferences.getString("deviceMacAddress", "default-device");
+  deviceMacAddress = preferences.getString("deviceMacAddress", "");
+
+  
   preferences.end();
 
-  setupBLE();
+  // DEBUG: Mostra o valor de deviceMacAddress carregado do Preferences no setup
+  Serial.println("Setup: SSID carregado das preferências: " + ssid);
+  Serial.println("Setup: Password carregado das preferências: " + password);
+  Serial.println("Setup: deviceMacAddress carregado das preferências: " + deviceMacAddress);
+
+
   
+
+  setupBLE();
+
   if (ssid == "" || password == "") {
     Serial.println("Nenhuma credencial salva. Aguardando BLE...");
     return;
@@ -212,10 +228,10 @@ void setup() {
     Serial.println("\nConectado!");
     configTime(0, 0, "pool.ntp.org", "time.nist.gov");
     delay(2000);
-    sendTrackerData();
+    // Não enviar dados imediatamente aqui. Esperar pela configuração BLE.
     lastRequestTime = millis();
   } else {
-    Serial.println("\nFalha ao conectar.");
+    Serial.println("\nFalha ao conectar. Aguardando nova configuração via BLE.");
   }
 }
 
@@ -237,37 +253,37 @@ void loop() {
         attemptedReconnect = false; // resetar a flag
       } else {
         Serial.println("\nFalha na reconexão. Aguardando nova configuração via BLE.");
-        attemptedReconnect = true; // evita novas tentativas
+        attemptedReconnect = true; // evita novas tentativas até que BLE configure novamente
       }
     }
 
     static unsigned long lastBleAdvertise = 0;
     unsigned long currentMillis = millis();
 
+    // Reinicia a publicidade BLE se ela parar (a cada 60 segundos)
     if (currentMillis - lastBleAdvertise >= 60000) {
       BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-      if (!pAdvertising->isAdvertising()) {
-        Serial.println("BLE não está anunciando. Reiniciando anúncio...");
-        pAdvertising->start();
-      }
+     
+      Serial.println("BLE não está anunciando ou tempo limite atingido. Reiniciando anúncio...");
+      pAdvertising->start();
       lastBleAdvertise = currentMillis;
     }
 
-    delay(10000);
-    return;
-
+    delay(10000); // Espera antes de tentar novamente ou verificar BLE
+    return; // Não prossegue com o envio de dados se não houver conexão WiFi
   }
 
+  // Lógica para enviar dados periodicamente
   unsigned long now = millis();
   if (now - lastRequestTime >= interval) {
     sendTrackerData();
     lastRequestTime = now;
   }
 
+  // Lógica para enviar dados imediatamente após a configuração BLE bem-sucedida
   if (shouldSendData && WiFi.status() == WL_CONNECTED) {
-  sendTrackerData();
-  lastRequestTime = millis();
-  shouldSendData = false;
-}
-
+    sendTrackerData();
+    lastRequestTime = millis();
+    shouldSendData = false; // Reseta a flag para evitar envios múltiplos
+  }
 }
